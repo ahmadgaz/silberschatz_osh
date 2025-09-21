@@ -150,8 +150,8 @@ struct Cmd {
     int argc;
     int is_background;
     int uses_history;
-    RedirKind redir_kind;
-    char *redir_path;
+    char *redir_in_path;
+    char *redir_out_path;
     Cmd *pipe_cmd;
 };
 
@@ -161,8 +161,8 @@ static void cmd_init (Cmd *cmd) {
     cmd->argc = 0;
     cmd->is_background = 0;
     cmd->uses_history = 0;
-    cmd->redir_kind = R_NONE;
-    cmd->redir_path = NULL;
+    cmd->redir_in_path = NULL;
+    cmd->redir_out_path = NULL;
     cmd->pipe_cmd = NULL;
 }
 
@@ -193,17 +193,15 @@ static int parse_cmd (Lexer *lx, Cmd *out) {
 	    // sink with pipe can't also take a file input
             if (tok.kind == T_IN && out->pipe_cmd != NULL) return -2;
 
-            // mixing < and >
-            if (out->redir_kind != R_NONE && out->redir_kind != rk) return -2;
-
 	    // duplicate redirect
-            if (out->redir_kind != R_NONE) return -2;
+	    if (tok.kind == T_IN && out->redir_in_path) return -2;
+	    if (tok.kind == T_OUT && out->redir_out_path) return -2;
 
             // expect filename
             Token t2 = next_token(lx);
             if (t2.kind != T_WORD){ free_tok_word(&t2); return -2; }
-            out->redir_kind = rk;
-            out->redir_path = t2.word;
+	    if (tok.kind == T_IN) out->redir_in_path = t2.word;
+	    if (tok.kind == T_OUT) out->redir_out_path = t2.word;
             tok = next_token(lx);
             continue;
 	}
@@ -211,10 +209,10 @@ static int parse_cmd (Lexer *lx, Cmd *out) {
         // handle pipes
         if (tok.kind == T_PIPE) {
 	    // lhs needs to exist
-	    if (out->argc == 0 && out->redir_kind == R_NONE) return -2;
+	    if (out->argc == 0 && out->redir_in_path == NULL && out->redir_out_path == NULL) return -2;
 
 	    // piped command cannot output to a pipe and an output file
-	    if (out->redir_kind == R_OUT) return -2;
+	    if (out->redir_out_path != NULL) return -2;
 
 	    // allocate a new space for the lhs
 	    Cmd *prev_cmd = (Cmd *)malloc(sizeof(Cmd));
@@ -253,23 +251,24 @@ static int parse_cmd (Lexer *lx, Cmd *out) {
     }
 
     out->argv[out->argc] = NULL;
-    return (out->argc == 0 && out->redir_kind == R_NONE) ? 1 : 0;
+    return (out->argc == 0 && out->redir_in_path == NULL && out->redir_out_path == NULL) ? 1 : 0;
 }
 
-// free string/arrays
+// free string/arrays of a cmd
 static void free_cmd_node (Cmd *cmd) {
     for (int i = 0; i < cmd->argc; i++) {
         free(cmd->argv[i]);
         cmd->argv[i] = NULL;
     }
-    free(cmd->redir_path);
-    cmd->redir_path = NULL;
+    free(cmd->redir_in_path);
+    free(cmd->redir_out_path);
+    cmd->redir_in_path = NULL;
+    cmd->redir_out_path = NULL;
 
     free(cmd->argv);
     cmd->argv = NULL;
 
     cmd->argc = 0;
-    cmd->redir_kind = R_NONE;
 }
 
 static void free_cmd_chain (Cmd *head) {
@@ -319,13 +318,14 @@ static void exec_cmd (Cmd *cmd) {
     }
 
     // redir
-    if (cmd->redir_kind == R_OUT) {
-        int out = open(cmd->redir_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (cmd->redir_out_path != NULL) {
+        int out = open(cmd->redir_out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (out < 0){ perror("open(out)"); free_cmd(cmd); exit(1); }
         if (dup2(out, STDOUT_FILENO) < 0) { perror("dup2(out)"); free_cmd(cmd); exit(1); }
         close(out);
-    } else if (cmd->redir_kind == R_IN) {
-        int in = open(cmd->redir_path, O_RDONLY);
+    }
+    if (cmd->redir_in_path != NULL) {
+        int in = open(cmd->redir_in_path, O_RDONLY);
         if (in < 0) { perror("open(in)"); free_cmd(cmd); exit(1); }
         if (dup2(in, STDIN_FILENO) < 0) { perror("dup2(in)"); free_cmd(cmd); exit(1); }
         close(in);
